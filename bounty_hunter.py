@@ -260,7 +260,33 @@ class BulletproofBountyHunter:
             print("\n" + "=" * 70 + f"\n[+] Processing Engine Finalized Successfully! View your report: bug_bounty_report_{self.domain}.md\n" + "=" * 70)
 
 
+def print_banner():
+    GREEN = "\033[92m"
+    CYAN = "\033[96m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+    banner = rf"""{GREEN}
+  ____              _   _   _             _   _             _
+ | __ )  ___  _   _| \ | |_| |_ _   _    | | | |_   _ _ __ | |_ ___ _ __
+ |  _ \ / _ \| | | |  \| | __| | | |  _  | |_| | | | | '_ \| __/ _ \ '__|
+ | |_) | (_) | |_| | |\  | |_| |_| | | |_| |  _  | |_| | | | | ||  __/ |
+ |____/ \___/ \__,_|_| \_|\__|\__, |  \___/|_| |_|\__,_|_| |_|\__\___|_|
+                               |___/{RESET}
+        {CYAN}Async Bug Bounty Recon and Vulnerability Mapping Engine{RESET}
+        {CYAN}Author  {BOLD}Muhammed Khan{RESET}
+        {CYAN}GitHub  {BOLD}github.com/muhammed95rafi-arch{RESET}
+    """
+    print(banner)
+    print(f"{YELLOW}{'=' * 70}{RESET}")
+    print(f"{RED}{BOLD}Authorized targets only Unauthorized scanning is illegal{RESET}")
+    print(f"{YELLOW}{'=' * 70}{RESET}\n")
+
+
 if __name__ == "__main__":
+    print_banner()
     target_scope = "https://example.com"
     hunter = BulletproofBountyHunter(target_scope)
     asyncio.run(hunter.hunt())
