@@ -24,8 +24,8 @@ Ensure you have Python 3.10+ installed on your computer or Kali Linux environmen
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com
-   cd muhammed95rafi-arch
+   git clone https://github.com/muhammed95rafi-arch/BountyHunter-Async.git
+cd BountyHunter-Async
    ```
 
 2. **Initialize and activate a virtual environment to avoid package conflicts:**
