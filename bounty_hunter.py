@@ -367,6 +367,6 @@ def print_banner():
 
 if __name__ == "__main__":
     print_banner()
-    target_scope = "https://authorized-target.com"
+    target_scope = input("Enter the authorized target URL (e.g. https://example.com): ").strip()
     hunter = BountyHunterAsync(target_scope)
     asyncio.run(hunter.hunt())
