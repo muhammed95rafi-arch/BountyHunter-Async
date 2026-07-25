@@ -10,7 +10,7 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
 
 
-class BulletproofBountyHunter:
+class BountyHunterAsync:
     def __init__(self, base_url):
         parsed_base = urllib.parse.urlparse(base_url)
         self.domain = parsed_base.netloc if parsed_base.netloc else parsed_base.path
@@ -287,6 +287,6 @@ def print_banner():
 
 if __name__ == "__main__":
     print_banner()
-    target_scope = "https://example.com"
-    hunter = BulletproofBountyHunter(target_scope)
+    target_scope = "https://authorized-target.com"
+    hunter = BountyHunterAsync(target_scope)
     asyncio.run(hunter.hunt())
