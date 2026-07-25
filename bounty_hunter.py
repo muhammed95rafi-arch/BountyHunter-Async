@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - 
 
 
 class BountyHunterAsync:
-    def __init__(self, base_url):
+    def __init__(self, base_url, max_crawl_depth=2, max_pages_per_domain=25):
         parsed_base = urllib.parse.urlparse(base_url)
         self.domain = parsed_base.netloc if parsed_base.netloc else parsed_base.path
         self.domain = self.domain.replace("www.", "")
@@ -19,6 +19,9 @@ class BountyHunterAsync:
         self.discovered_endpoints = set()
         self.js_files = set()
         self.subdomains = set([self.domain])
+        self.visited_pages = set()
+        self.max_crawl_depth = max_crawl_depth
+        self.max_pages_per_domain = max_pages_per_domain
         self.report_data = {
             "target": self.base_url,
             "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -35,6 +38,9 @@ class BountyHunterAsync:
             'X-Remote-IP': '127.0.0.1',
             'X-Client-IP': '127.0.0.1'
         }
+        # Common parameter names injected into query-less URLs so SSRF/IDOR/XSS
+        # checks still have something to test against.
+        self.common_test_params = ['id', 'url', 'redirect', 'page', 'q', 'search', 'ref']
 
     async def create_session(self):
         timeout = aiohttp.ClientTimeout(total=15)
@@ -66,26 +72,62 @@ class BountyHunterAsync:
         except Exception as e:
             logging.error(f"[-] Subdomain Enumeration pipeline timed out or was blocked: {str(e)}")
 
-    async def extract_endpoints_and_js(self, session, url):
-        logging.info(f"Crawl Engine Executing on Target Vector: {url}")
+    async def crawl_recursive(self, session, url, depth=0, page_counter=None):
+        """Recursively crawl in-scope pages up to max_crawl_depth, collecting
+        endpoints and JS files along the way instead of only touching the
+        homepage of each subdomain."""
+        if page_counter is None:
+            page_counter = [0]
+
+        normalized = url.split('#')[0]
+        if normalized in self.visited_pages:
+            return
+        if depth > self.max_crawl_depth:
+            return
+        if page_counter[0] >= self.max_pages_per_domain:
+            return
+
+        self.visited_pages.add(normalized)
+        page_counter[0] += 1
+
+        logging.info(f"Crawl Engine Executing on Target Vector (depth={depth}): {url}")
         try:
             async with session.get(url, allow_redirects=True) as response:
                 if response.status != 200:
                     return
+                content_type = response.headers.get('Content-Type', '')
+                if 'text/html' not in content_type:
+                    return
                 html = await response.text()
                 soup = BeautifulSoup(html, 'html.parser')
+
+                new_links = []
                 for a in soup.find_all('a', href=True):
                     href = a['href']
+                    if href.startswith(('mailto:', 'tel:', 'javascript:')):
+                        continue
                     full_url = urllib.parse.urljoin(url, href)
                     parsed_item = urllib.parse.urlparse(full_url)
                     if any(sub in parsed_item.netloc for sub in self.subdomains):
-                        self.discovered_endpoints.add(full_url)
+                        clean_url = full_url.split('#')[0]
+                        self.discovered_endpoints.add(clean_url)
+                        new_links.append(clean_url)
+
                 for script in soup.find_all('script', src=True):
                     src = script['src']
                     full_js_url = urllib.parse.urljoin(url, src)
                     parsed_js = urllib.parse.urlparse(full_js_url)
                     if any(sub in parsed_js.netloc for sub in self.subdomains):
                         self.js_files.add(full_js_url)
+
+                # Recurse into freshly discovered in-scope links
+                next_depth_tasks = [
+                    self.crawl_recursive(session, link, depth + 1, page_counter)
+                    for link in new_links
+                    if link not in self.visited_pages
+                ]
+                if next_depth_tasks:
+                    await asyncio.gather(*next_depth_tasks)
         except Exception as e:
             logging.debug(f"Gracefully skipped unreachable crawl trajectory {url}: {str(e)}")
 
@@ -124,35 +166,51 @@ class BountyHunterAsync:
             except Exception:
                 pass
 
-    async def analyze_xss_context(self, session, url):
-        context_marker = "hunterXSStag'\"><"
+    def _urls_to_test(self, url):
+        """Return a list of URLs to actually send test requests to.
+        If the URL already has query parameters, test those directly.
+        If not, synthesize a handful of common parameters so the page
+        still gets exercised instead of silently skipped."""
         parsed_url = urllib.parse.urlparse(url)
         params = urllib.parse.parse_qs(parsed_url.query)
-        if not params:
-            return
-        for param in params:
-            test_params = params.copy()
-            test_params[param] = [context_marker]
-            new_query = urllib.parse.urlencode(test_params, doseq=True)
-            test_url = parsed_url._replace(query=new_query).geturl()
-            try:
-                async with session.get(test_url) as response:
-                    body = await response.text()
-                    if context_marker in body:
-                        if f'value="{context_marker}"' in body or f"value='{context_marker}'" in body:
-                            msg = f"Attribute context reflection discovered on '{param}' parameter. Quotes unescaped."
-                            logging.warning(f" [XSS RISK]: {msg} at {url}")
-                            self.report_data["vulnerabilities"].append({
-                                "type": "Reflected XSS (Attribute Context)", "url": url, "details": msg
-                            })
-                        elif f"<{context_marker}" in body or context_marker in body:
-                            msg = "Direct raw text node script execution injection bounds open."
-                            logging.critical(f" [HIGH XSS RISK]: {msg} at {url}")
-                            self.report_data["vulnerabilities"].append({
-                                "type": "Reflected XSS (HTML Context)", "url": url, "details": msg
-                            })
-            except Exception:
-                pass
+        if params:
+            return [(url, params)]
+
+        synthesized = []
+        for pname in self.common_test_params:
+            fake_params = {pname: ['testvalue']}
+            new_query = urllib.parse.urlencode(fake_params, doseq=True)
+            synthesized_url = parsed_url._replace(query=new_query).geturl()
+            synthesized.append((synthesized_url, fake_params))
+        return synthesized
+
+    async def analyze_xss_context(self, session, url):
+        context_marker = "hunterXSStag'\"><"
+        for test_url, params in self._urls_to_test(url):
+            parsed_url = urllib.parse.urlparse(test_url)
+            for param in params:
+                test_params = params.copy()
+                test_params[param] = [context_marker]
+                new_query = urllib.parse.urlencode(test_params, doseq=True)
+                probe_url = parsed_url._replace(query=new_query).geturl()
+                try:
+                    async with session.get(probe_url) as response:
+                        body = await response.text()
+                        if context_marker in body:
+                            if f'value="{context_marker}"' in body or f"value='{context_marker}'" in body:
+                                msg = f"Attribute context reflection discovered on '{param}' parameter. Quotes unescaped."
+                                logging.warning(f" [XSS RISK]: {msg} at {probe_url}")
+                                self.report_data["vulnerabilities"].append({
+                                    "type": "Reflected XSS (Attribute Context)", "url": probe_url, "details": msg
+                                })
+                            elif f"<{context_marker}" in body or context_marker in body:
+                                msg = "Direct raw text node script execution injection bounds open."
+                                logging.critical(f" [HIGH XSS RISK]: {msg} at {probe_url}")
+                                self.report_data["vulnerabilities"].append({
+                                    "type": "Reflected XSS (HTML Context)", "url": probe_url, "details": msg
+                                })
+                except Exception:
+                    pass
 
     async def check_serialization_and_tokens(self, session, url):
         try:
@@ -178,23 +236,23 @@ class BountyHunterAsync:
     async def check_gateways(self, session, url):
         ssrf_indicators = ['url', 'dest', 'redirect', 'uri', 'path', 'domain', 'callback', 'webhook', 'proxy']
         idor_indicators = ['id', 'user', 'account', 'invoice', 'doc', 'profile', 'uuid', 'uid']
-        parsed = urllib.parse.urlparse(url)
-        params = urllib.parse.parse_qs(parsed.query)
-        for param in params.keys():
-            p_lower = param.lower()
-            if any(ind in p_lower for ind in ssrf_indicators):
-                msg = f"Parameter '{param}' handles structural routing values. Intercept payload maps via Burp Suite and probe cloud configuration metadata endpoints."
-                logging.warning(f" [SSRF GATEWAY MAP]: {msg} on {url}")
-                self.report_data["vulnerabilities"].append({
-                    "type": "Potential SSRF Gateway Entry", "url": url, "details": msg
-                })
-            if any(idor in p_lower for idor in idor_indicators):
-                val = params[param]
-                msg = f"Exposed structural reference identifier vector logic discovered: '{param}'={val}. Manipulate sequence matrices to test authentication authorization controls."
-                logging.warning(f" [IDOR / REFERENCE ENTRY]: {msg} on {url}")
-                self.report_data["vulnerabilities"].append({
-                    "type": "Potential IDOR Tracking Pattern", "url": url, "details": msg
-                })
+
+        for test_url, params in self._urls_to_test(url):
+            for param in params.keys():
+                p_lower = param.lower()
+                if any(ind in p_lower for ind in ssrf_indicators):
+                    msg = f"Parameter '{param}' handles structural routing values. Intercept payload maps via Burp Suite and probe cloud configuration metadata endpoints."
+                    logging.warning(f" [SSRF GATEWAY MAP]: {msg} on {test_url}")
+                    self.report_data["vulnerabilities"].append({
+                        "type": "Potential SSRF Gateway Entry", "url": test_url, "details": msg
+                    })
+                if any(idor in p_lower for idor in idor_indicators):
+                    val = params[param]
+                    msg = f"Exposed structural reference identifier vector logic discovered: '{param}'={val}. Manipulate sequence matrices to test authentication authorization controls."
+                    logging.warning(f" [IDOR / REFERENCE ENTRY]: {msg} on {test_url}")
+                    self.report_data["vulnerabilities"].append({
+                        "type": "Potential IDOR Tracking Pattern", "url": test_url, "details": msg
+                    })
 
     def generate_markdown_report(self):
         filename = f"bug_bounty_report_{self.domain}.md"
@@ -232,8 +290,12 @@ class BountyHunterAsync:
             await self.enumerate_subdomains(session)
 
             logging.info("Initializing Network Probing Context Infrastructure Arrays...")
-            crawl_targets = [f"https://{sub}" for sub in list(self.subdomains)[:15]]
-            crawl_tasks = [self.extract_endpoints_and_js(session, target) for target in crawl_targets]
+            # Sort so the primary target domain is always crawled first,
+            # regardless of set ordering, then fill in remaining subdomains.
+            ordered_subdomains = sorted(self.subdomains, key=lambda s: (s != self.domain, s))
+            crawl_targets = [f"https://{sub}" for sub in ordered_subdomains[:15]]
+
+            crawl_tasks = [self.crawl_recursive(session, target, depth=0) for target in crawl_targets]
             await asyncio.gather(*crawl_tasks)
 
             if not self.discovered_endpoints:
