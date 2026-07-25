@@ -93,16 +93,25 @@ class BountyHunterAsync:
         logging.info(f"Crawl Engine Executing on Target Vector (depth={depth}): {url}")
         try:
             async with session.get(url, allow_redirects=True) as response:
+                logging.info(f" [CRAWL] Response status {response.status} for {url}")
                 if response.status != 200:
+                    logging.warning(f" [CRAWL] Non-200 status ({response.status}), skipping page: {url}")
                     return
                 content_type = response.headers.get('Content-Type', '')
+                logging.info(f" [CRAWL] Content-Type: '{content_type}' for {url}")
                 if 'text/html' not in content_type:
+                    logging.warning(f" [CRAWL] Skipping non-HTML content-type '{content_type}' for {url}")
                     return
                 html = await response.text()
+                logging.info(f" [CRAWL] Fetched {len(html)} bytes of HTML from {url}")
                 soup = BeautifulSoup(html, 'html.parser')
 
+                all_anchor_tags = soup.find_all('a', href=True)
+                logging.info(f" [CRAWL] Found {len(all_anchor_tags)} raw <a href> tags on {url}")
+
                 new_links = []
-                for a in soup.find_all('a', href=True):
+                skipped_out_of_scope = 0
+                for a in all_anchor_tags:
                     href = a['href']
                     if href.startswith(('mailto:', 'tel:', 'javascript:')):
                         continue
@@ -112,8 +121,15 @@ class BountyHunterAsync:
                         clean_url = full_url.split('#')[0]
                         self.discovered_endpoints.add(clean_url)
                         new_links.append(clean_url)
+                    else:
+                        skipped_out_of_scope += 1
 
-                for script in soup.find_all('script', src=True):
+                logging.info(f" [CRAWL] {len(new_links)} in-scope links kept, {skipped_out_of_scope} out-of-scope links skipped on {url}")
+
+                all_script_tags = soup.find_all('script', src=True)
+                logging.info(f" [CRAWL] Found {len(all_script_tags)} <script src> tags on {url}")
+
+                for script in all_script_tags:
                     src = script['src']
                     full_js_url = urllib.parse.urljoin(url, src)
                     parsed_js = urllib.parse.urlparse(full_js_url)
@@ -129,7 +145,7 @@ class BountyHunterAsync:
                 if next_depth_tasks:
                     await asyncio.gather(*next_depth_tasks)
         except Exception as e:
-            logging.debug(f"Gracefully skipped unreachable crawl trajectory {url}: {str(e)}")
+            logging.error(f" [CRAWL] Exception while fetching {url}: {type(e).__name__}: {str(e)}")
 
     async def analyze_js_files(self, session):
         logging.info(f"Analyzing {len(self.js_files)} Client-Side Structural JS Component Layers...")
@@ -294,6 +310,8 @@ class BountyHunterAsync:
             # regardless of set ordering, then fill in remaining subdomains.
             ordered_subdomains = sorted(self.subdomains, key=lambda s: (s != self.domain, s))
             crawl_targets = [f"https://{sub}" for sub in ordered_subdomains[:15]]
+            logging.info(f" [DEBUG] Subdomains discovered ({len(self.subdomains)}): {sorted(self.subdomains)}")
+            logging.info(f" [DEBUG] Crawl targets selected: {crawl_targets}")
 
             crawl_tasks = [self.crawl_recursive(session, target, depth=0) for target in crawl_targets]
             await asyncio.gather(*crawl_tasks)
