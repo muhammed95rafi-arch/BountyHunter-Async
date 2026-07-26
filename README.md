@@ -43,17 +43,17 @@ Ensure you have Python 3.10+ installed on your computer or Kali Linux environmen
 
 ## 💻 Usage Instructions
 
-1. Open `bounty_hunter.py` in your favorite text editor.
-2. Scroll to the bottom of the file and update the `target_scope` variable to your authorized testing scope URL:
-   ```python
-   if __name__ == "__main__":
-       target_scope = "https://authorized-target.com"
-   ```
-3. Execute the automated scanner from your command terminal:
+1. Execute the automated scanner from your command terminal:
    ```bash
    python3 bounty_hunter.py
    ```
-4. Once completed, review the generated target summary intelligence directly inside the auto-created file: `bug_bounty_report_[domain].md`.
+
+2. When prompted, enter your authorized testing scope URL:
+   ```
+   Enter the authorized target URL (e.g. https://example.com): https://your-authorized-target.com
+   ```
+
+3. Once completed, review the generated target summary intelligence directly inside the auto-created file: `bug_bounty_report_[domain].md`.
 
 ---
 
