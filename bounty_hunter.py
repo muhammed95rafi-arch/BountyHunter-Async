@@ -43,7 +43,7 @@ class BountyHunterAsync:
         self.common_test_params = ['id', 'url', 'redirect', 'page', 'q', 'search', 'ref']
 
     async def create_session(self):
-        timeout = aiohttp.ClientTimeout(total=45, connect=15, sock_read=30)
+        timeout = aiohttp.ClientTimeout(total=120, connect=60, sock_read=90)
         return aiohttp.ClientSession(headers=self.headers, timeout=timeout)
 
     async def enumerate_subdomains(self, session):
